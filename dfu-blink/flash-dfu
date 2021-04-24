@@ -1,0 +1,17 @@
+#!/bin/bash
+
+#
+# dfu-util may need additional privileges to be able to
+# communicate with the DFU bootloader if DFU USB device is
+# not using the "standard" vid 0483 pid df11.
+#
+# Instead of running dfu-util as root, an udev configuration file
+# "/etc/udev/rules.d/60-dfu-util-local.rules" can be created with
+# this contents:
+#
+#     ACTION=="add", SUBSYSTEM=="usb", ATTRS{idVendor}=="f055", ATTRS{idProduct}=="df11", MODE="664", GROUP="plugdev"
+#
+
+cargo b && \
+arm-none-eabi-objcopy -O binary target/thumbv7m-none-eabi/release/dfu-blink dfu-blink.bin && \
+dfu-util -s 0x08004000:leave -D dfu-blink.bin

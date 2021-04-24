@@ -1,0 +1,6 @@
+#!/bin/bash
+
+cargo b && \
+arm-none-eabi-objcopy -O binary target/thumbv7m-none-eabi/release/dfu-bootloader dfu-bootloader.bin && \
+st-flash write dfu-bootloader.bin 0x8000000
+
