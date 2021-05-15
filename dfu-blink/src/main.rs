@@ -3,7 +3,7 @@
 //! Example firmware for DFU bootloader for "Bluepill" board.
 //!
 //! LED on PC13 blinks 5 times a second. After about 10 seconds
-//! allication resets the microcontroller and it stays in 
+//! allication resets the microcontroller and it stays in
 //! DFU mode.
 //!
 //! First 0x10 bytes of RAM are reserved. In "memory.x" linker script
@@ -18,11 +18,15 @@
 use panic_halt as _;
 
 use cortex_m_rt::entry;
-use stm32f1xx_hal::{pac, prelude::*, timer::{Timer, Event, CountDownTimer}};
+use stm32f1xx_hal::{
+    pac,
+    prelude::*,
+    timer::{CountDownTimer, Event, Timer},
+};
 
-use stm32f1xx_hal::pac::{interrupt, TIM2};
 use stm32f1xx_hal::gpio;
-use stm32f1xx_hal::gpio::{Output, PushPull, gpioc};
+use stm32f1xx_hal::gpio::{gpioc, Output, PushPull};
+use stm32f1xx_hal::pac::{interrupt, TIM2};
 
 use core::mem::MaybeUninit;
 
@@ -32,7 +36,7 @@ static mut LED: MaybeUninit<LedType> = MaybeUninit::uninit();
 static mut TIM: MaybeUninit<CountDownTimer<TIM2>> = MaybeUninit::uninit();
 static mut LED_STATUS: u32 = 0;
 
-const KEY_STAY_IN_BOOT : u32 = 0xb0d42b89;
+const KEY_STAY_IN_BOOT: u32 = 0xb0d42b89;
 
 /// Configure VTOR register to point to an actual interrupt
 /// vector table, otherwise bootloader will handle interrupts
@@ -40,7 +44,7 @@ const KEY_STAY_IN_BOOT : u32 = 0xb0d42b89;
 #[inline(never)]
 fn configure_vtor_dfu(scb: &cortex_m::peripheral::SCB) {
     extern "C" {
-        static __reset_vector:u32;
+        static __reset_vector: u32;
     }
 
     unsafe {
@@ -51,7 +55,6 @@ fn configure_vtor_dfu(scb: &cortex_m::peripheral::SCB) {
 
 /// Initialize hardware, LED GPIO and a timer
 fn app_init() {
-
     let cortex = cortex_m::Peripherals::take().unwrap();
     let device = pac::Peripherals::take().unwrap();
 
@@ -60,12 +63,13 @@ fn app_init() {
     let mut flash = device.FLASH.constrain();
     let mut rcc = device.RCC.constrain();
 
-    rcc.cfgr = rcc.cfgr
-                .use_hse(8.mhz())
-                .sysclk(72.mhz())
-                .hclk(72.mhz())
-                .pclk1(36.mhz())
-                .pclk2(72.mhz());
+    rcc.cfgr = rcc
+        .cfgr
+        .use_hse(8.mhz())
+        .sysclk(72.mhz())
+        .hclk(72.mhz())
+        .pclk1(36.mhz())
+        .pclk2(72.mhz());
 
     configure_vtor_dfu(&cortex.SCB);
 
@@ -74,7 +78,9 @@ fn app_init() {
     let clocks = rcc.cfgr.freeze(&mut flash.acr);
 
     let mut gpioc = device.GPIOC.split(&mut rcc.apb2);
-    let led = gpioc.pc13.into_push_pull_output_with_state(&mut gpioc.crh, gpio::State::High);
+    let led = gpioc
+        .pc13
+        .into_push_pull_output_with_state(&mut gpioc.crh, gpio::State::High);
 
     unsafe {
         LED.as_mut_ptr().write(led);
@@ -122,7 +128,7 @@ fn reset_into_dfu() -> ! {
     cortex_m::asm::dsb();
     unsafe {
         // System reset request
-        cortex.SCB.aircr.modify(|v| 0x05FA_0004 | (v & 0x700) );
+        cortex.SCB.aircr.modify(|v| 0x05FA_0004 | (v & 0x700));
     }
     cortex_m::asm::dsb();
     loop {}
@@ -131,9 +137,9 @@ fn reset_into_dfu() -> ! {
 /// Blink LED, and reset to DFU after some time.
 #[interrupt]
 fn TIM2() {
-    let led = unsafe {&mut *LED.as_mut_ptr() };
-    let tim = unsafe {&mut *TIM.as_mut_ptr() };
-    let status = unsafe {&mut LED_STATUS };
+    let led = unsafe { &mut *LED.as_mut_ptr() };
+    let tim = unsafe { &mut *TIM.as_mut_ptr() };
+    let status = unsafe { &mut LED_STATUS };
 
     tim.clear_update_interrupt_flag();
 

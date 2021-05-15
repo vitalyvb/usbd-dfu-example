@@ -28,7 +28,6 @@
 //! must agree on used addresses and values for this to work.
 //!
 
-#![feature(asm)]
 #![no_std]
 #![no_main]
 
@@ -38,12 +37,16 @@ use panic_halt as _;
 
 use cortex_m_rt::entry;
 use embedded_hal::digital::v2::OutputPin;
-use stm32f1xx_hal::{pac, prelude::*, timer::{Timer, Event, CountDownTimer}};
+use stm32f1xx_hal::{
+    pac,
+    prelude::*,
+    timer::{CountDownTimer, Event, Timer},
+};
 
-use stm32f1xx_hal::pac::{interrupt, TIM2, RCC, GPIOB};
+use stm32f1xx_hal::gpio::{gpioc, Output, PushPull};
+use stm32f1xx_hal::pac::{interrupt, GPIOB, RCC, TIM2};
 use stm32f1xx_hal::usb::{Peripheral, UsbBus, UsbBusType};
 use stm32f1xx_hal::{flash, gpio};
-use stm32f1xx_hal::gpio::{Output, PushPull, gpioc};
 use usb_device::{bus::UsbBusAllocator, prelude::*};
 use usbd_dfu::*;
 
@@ -51,13 +54,13 @@ use core::mem::MaybeUninit;
 
 /// If this value is found at the address 0x2000_0000 (beginning of RAM),
 /// bootloader will enter DFU mode.
-const KEY_STAY_IN_BOOT : u32 = 0xb0d42b89;
+const KEY_STAY_IN_BOOT: u32 = 0xb0d42b89;
 
 /// Board flash configuration. MEM_INFO_STRING below must also be changed.
-const FLASH_SIZE : flash::FlashSize = flash::FlashSize::Sz128K;
-const FLASH_SIZE_BYTES : usize = (FLASH_SIZE as usize) * 1024;
-const BOOTLOADER_SIZE_BYTES : u32 = 16 * 1024;
-const FW_ADDRESS : u32 = 0x0800_4000;
+const FLASH_SIZE: flash::FlashSize = flash::FlashSize::Sz128K;
+const FLASH_SIZE_BYTES: usize = (FLASH_SIZE as usize) * 1024;
+const BOOTLOADER_SIZE_BYTES: u32 = 16 * 1024;
+const FW_ADDRESS: u32 = 0x0800_4000;
 
 type LedType = gpioc::PC13<Output<PushPull>>;
 
@@ -67,7 +70,7 @@ static mut TIM: MaybeUninit<CountDownTimer<TIM2>> = MaybeUninit::uninit();
 static mut FLASH: MaybeUninit<flash::Parts> = MaybeUninit::uninit();
 static mut USB_BUS: MaybeUninit<UsbBusAllocator<UsbBusType>> = MaybeUninit::uninit();
 static mut USB_DEVICE: MaybeUninit<UsbDevice<UsbBusType>> = MaybeUninit::uninit();
-static mut USB_DFU: MaybeUninit<DFUClass<UsbBusType,STM32Mem>> = MaybeUninit::uninit();
+static mut USB_DFU: MaybeUninit<DFUClass<UsbBusType, STM32Mem>> = MaybeUninit::uninit();
 
 pub struct STM32Mem<'a> {
     writer: flash::FlashWriter<'a>,
@@ -75,9 +78,7 @@ pub struct STM32Mem<'a> {
 }
 
 impl<'a> STM32Mem<'a> {
-
     fn new(mut writer: flash::FlashWriter<'a>) -> Self {
-
         // Disable erase and program verification.
         // It should be enabled, but erase verification
         // does not work.
@@ -93,15 +94,19 @@ impl<'a> STM32Mem<'a> {
 
 impl<'a> DFUMemIO for STM32Mem<'a> {
     const INITIAL_ADDRESS_POINTER: u32 = 0x0800_0000;
-    const PAGE_PROGRAM_TIME_MS : u32 = 7;       // time it takes to program 128 bytes
-    const PAGE_ERASE_TIME_MS : u32 = 50;
-    const FULL_ERASE_TIME_MS : u32 = 50*112;
+    const PAGE_PROGRAM_TIME_MS: u32 = 7; // time it takes to program 128 bytes
+    const PAGE_ERASE_TIME_MS: u32 = 50;
+    const FULL_ERASE_TIME_MS: u32 = 50 * 112;
 
     const MEM_INFO_STRING: &'static str = "@Flash/0x08000000/16*1Ka,112*1Kg";
-    const HAS_DOWNLOAD: bool = false;
+    const HAS_DOWNLOAD: bool = true;
     const HAS_UPLOAD: bool = true;
 
-    fn read_block(&mut self, address: u32, length: usize) -> core::result::Result<&[u8], DFUMemError> {
+    fn read_block(
+        &mut self,
+        address: u32,
+        length: usize,
+    ) -> core::result::Result<&[u8], DFUMemError> {
         let flash_top: u32 = 0x0800_0000 + FLASH_SIZE_BYTES as u32;
 
         if address < 0x0800_0000 {
@@ -113,15 +118,12 @@ impl<'a> DFUMemIO for STM32Mem<'a> {
 
         let len = length.min((flash_top - address) as usize);
 
-        let mem =
-            unsafe {
-                &*core::ptr::slice_from_raw_parts(address as *mut u8, len)
-            };
+        let mem = unsafe { &*core::ptr::slice_from_raw_parts(address as *const u8, len) };
 
         Ok(mem)
     }
-    fn erase_block(&mut self, address: u32) -> core::result::Result<(), DFUMemError> {
 
+    fn erase_block(&mut self, address: u32) -> core::result::Result<(), DFUMemError> {
         if address < flash::FLASH_START {
             return Err(DFUMemError::Address);
         }
@@ -134,7 +136,7 @@ impl<'a> DFUMemIO for STM32Mem<'a> {
             return Err(DFUMemError::Address);
         }
 
-        if address & (1024-1) != 0 {
+        if address & (1024 - 1) != 0 {
             return Ok(());
         }
 
@@ -150,13 +152,16 @@ impl<'a> DFUMemIO for STM32Mem<'a> {
         Err(DFUMemError::Unknown)
     }
 
-    fn store_write_buffer(&mut self, src:&[u8]) -> core::result::Result<(), ()>{
+    fn store_write_buffer(&mut self, src: &[u8]) -> core::result::Result<(), ()> {
         self.buffer[..src.len()].copy_from_slice(src);
         Ok(())
     }
 
-    fn program_block(&mut self, address: u32, length: usize) -> core::result::Result<(), DFUMemError>{
-
+    fn program_block(
+        &mut self,
+        address: u32,
+        length: usize,
+    ) -> core::result::Result<(), DFUMemError> {
         if address < flash::FLASH_START {
             return Err(DFUMemError::Address);
         }
@@ -194,17 +199,15 @@ fn read_serial() -> u32 {
     let u_id0 = 0x1FFF_F7E8 as *const u32;
     let u_id1 = 0x1FFF_F7EC as *const u32;
 
-    unsafe {
-        u_id0.read().wrapping_add(u_id1.read())
-    }
+    unsafe { u_id0.read().wrapping_add(u_id1.read()) }
 }
 
 /// Returns device serial number as hex string slice.
 fn get_serial_str() -> &'static str {
-    static mut SERIAL: [u8;8] = [b' ';8];
+    static mut SERIAL: [u8; 8] = [b' '; 8];
     let serial = unsafe { SERIAL.as_mut() };
 
-    fn hex(v:u8) -> u8 {
+    fn hex(v: u8) -> u8 {
         match v {
             0..=9 => v + b'0',
             0xa..=0xf => v - 0xa + b'a',
@@ -215,7 +218,7 @@ fn get_serial_str() -> &'static str {
     let sn = read_serial();
 
     for (i, d) in serial.iter_mut().enumerate() {
-        *d = hex(((sn >> i*4) & 0xf) as u8)
+        *d = hex(((sn >> (i * 4)) & 0xf) as u8)
     }
 
     unsafe { str::from_utf8_unchecked(serial) }
@@ -224,7 +227,6 @@ fn get_serial_str() -> &'static str {
 /// Initialize, configure all peripherals, and setup USB DFU.
 /// Interrupts must be disabled.
 fn dfu_init() {
-
     // let cortex = cortex_m::Peripherals::take().unwrap();
     let device = unsafe { pac::Peripherals::steal() };
 
@@ -235,18 +237,20 @@ fn dfu_init() {
 
     let mut rcc = device.RCC.constrain();
 
-    rcc.cfgr = rcc.cfgr
-                .use_hse(8.mhz())
-                .sysclk(72.mhz())
-                .hclk(72.mhz())
-                .pclk1(36.mhz())
-                .pclk2(72.mhz());
-
+    rcc.cfgr = rcc
+        .cfgr
+        .use_hse(8.mhz())
+        .sysclk(72.mhz())
+        .hclk(72.mhz())
+        .pclk1(36.mhz())
+        .pclk2(72.mhz());
 
     let clocks = rcc.cfgr.freeze(&mut flash.acr);
-        
+
     let mut gpioc = device.GPIOC.split(&mut rcc.apb2);
-    let led = gpioc.pc13.into_push_pull_output_with_state(&mut gpioc.crh, gpio::State::High);
+    let led = gpioc
+        .pc13
+        .into_push_pull_output_with_state(&mut gpioc.crh, gpio::State::High);
 
     unsafe {
         LED.as_mut_ptr().write(led);
@@ -294,7 +298,7 @@ fn dfu_init() {
     let fwr = flash.writer(flash::SectorSize::Sz1K, FLASH_SIZE);
     let stm32mem = STM32Mem::new(fwr);
 
-    unsafe  {
+    unsafe {
         USB_DFU.as_mut_ptr().write(DFUClass::new(bus, stm32mem));
     }
 
@@ -312,7 +316,7 @@ fn dfu_init() {
         .max_packet_size_0(64)
         .build();
 
-    unsafe  {
+    unsafe {
         USB_DEVICE.as_mut_ptr().write(usb_dev);
     }
 
@@ -323,19 +327,19 @@ fn dfu_init() {
 }
 
 fn minimal_init() {
-
     unsafe {
         // enable PWR, AFIO, GPIOB
-        (*RCC::ptr()).apb1enr.modify(|_,w| w.pwren().set_bit());
-        (*RCC::ptr()).apb2enr.modify(|_,w| w.afioen().set_bit().iopben().set_bit());
+        (*RCC::ptr()).apb1enr.modify(|_, w| w.pwren().set_bit());
+        (*RCC::ptr())
+            .apb2enr
+            .modify(|_, w| w.afioen().set_bit().iopben().set_bit());
     }
 
     unsafe {
         // P2 - Input, Floating
-        (*GPIOB::ptr()).crl.modify(|_,w| w
-                .mode2().input()
-                .cnf2().open_drain()
-        );
+        (*GPIOB::ptr())
+            .crl
+            .modify(|_, w| w.mode2().input().cnf2().open_drain());
     }
 
     cortex_m::asm::delay(100);
@@ -404,7 +408,6 @@ fn dfu_ram_requested() -> bool {
 
 #[entry]
 fn main() -> ! {
-
     if !dfu_ram_requested() {
         minimal_init();
         if !dfu_enforced() {
@@ -432,7 +435,7 @@ fn controller_reset() -> ! {
     cortex_m::asm::dsb();
     unsafe {
         // System reset request
-        cortex.SCB.aircr.modify(|v| 0x05FA_0004 | (v & 0x700) );
+        cortex.SCB.aircr.modify(|v| 0x05FA_0004 | (v & 0x700));
     }
     cortex_m::asm::dsb();
 
@@ -446,8 +449,8 @@ fn USB_LP_CAN_RX0() {
 
 #[interrupt]
 fn TIM2() {
-    let led = unsafe {&mut *LED.as_mut_ptr() };
-    let tim = unsafe {&mut *TIM.as_mut_ptr() };
+    let led = unsafe { &mut *LED.as_mut_ptr() };
+    let tim = unsafe { &mut *TIM.as_mut_ptr() };
 
     tim.clear_update_interrupt_flag();
 
