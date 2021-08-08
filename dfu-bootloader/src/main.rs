@@ -94,19 +94,15 @@ impl<'a> STM32Mem<'a> {
 
 impl<'a> DFUMemIO for STM32Mem<'a> {
     const INITIAL_ADDRESS_POINTER: u32 = 0x0800_0000;
-    const PAGE_PROGRAM_TIME_MS: u32 = 7; // time it takes to program 128 bytes
-    const PAGE_ERASE_TIME_MS: u32 = 50;
+    const PROGRAM_TIME_MS: u32 = 7; // time it takes to program 128 bytes
+    const ERASE_TIME_MS: u32 = 50;
     const FULL_ERASE_TIME_MS: u32 = 50 * 112;
 
     const MEM_INFO_STRING: &'static str = "@Flash/0x08000000/16*1Ka,112*1Kg";
     const HAS_DOWNLOAD: bool = true;
     const HAS_UPLOAD: bool = true;
 
-    fn read_block(
-        &mut self,
-        address: u32,
-        length: usize,
-    ) -> core::result::Result<&[u8], DFUMemError> {
+    fn read(&mut self, address: u32, length: usize) -> core::result::Result<&[u8], DFUMemError> {
         let flash_top: u32 = 0x0800_0000 + FLASH_SIZE_BYTES as u32;
 
         if address < 0x0800_0000 {
@@ -123,7 +119,7 @@ impl<'a> DFUMemIO for STM32Mem<'a> {
         Ok(mem)
     }
 
-    fn erase_block(&mut self, address: u32) -> core::result::Result<(), DFUMemError> {
+    fn erase(&mut self, address: u32) -> core::result::Result<(), DFUMemError> {
         if address < flash::FLASH_START {
             return Err(DFUMemError::Address);
         }
@@ -148,7 +144,7 @@ impl<'a> DFUMemIO for STM32Mem<'a> {
         }
     }
 
-    fn erase_all_blocks(&mut self) -> Result<(), DFUMemError> {
+    fn erase_all(&mut self) -> Result<(), DFUMemError> {
         Err(DFUMemError::Unknown)
     }
 
@@ -157,11 +153,7 @@ impl<'a> DFUMemIO for STM32Mem<'a> {
         Ok(())
     }
 
-    fn program_block(
-        &mut self,
-        address: u32,
-        length: usize,
-    ) -> core::result::Result<(), DFUMemError> {
+    fn program(&mut self, address: u32, length: usize) -> core::result::Result<(), DFUMemError> {
         if address < flash::FLASH_START {
             return Err(DFUMemError::Address);
         }
