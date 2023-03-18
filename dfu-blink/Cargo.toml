@@ -1,9 +1,9 @@
 [package]
 name = "dfu-blink"
 description = "Blink application for DFU bootloader example"
-version = "0.2.0"
+version = "0.3.0"
 authors = ["Vitalii Bursov <vitaly@bursov.com>"]
-edition = "2018"
+edition = "2021"
 license = "MIT"
 repository = "https://github.com/vitalyvb/usbd-dfu-example"
 
