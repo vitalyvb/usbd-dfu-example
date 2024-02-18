@@ -36,11 +36,10 @@ use core::str;
 use panic_halt as _;
 
 use cortex_m_rt::entry;
-use embedded_hal::digital::v2::OutputPin;
 use stm32f1xx_hal::{
     pac,
     prelude::*,
-    timer::{CountDownTimer, Event, Timer},
+    timer::{CounterHz, Event},
 };
 
 use stm32f1xx_hal::gpio::{gpioc, Output, PushPull};
@@ -65,7 +64,7 @@ const FW_ADDRESS: u32 = 0x0800_4000;
 type LedType = gpioc::PC13<Output<PushPull>>;
 
 static mut LED: MaybeUninit<LedType> = MaybeUninit::uninit();
-static mut TIM: MaybeUninit<CountDownTimer<TIM2>> = MaybeUninit::uninit();
+static mut TIM: MaybeUninit<CounterHz<TIM2>> = MaybeUninit::uninit();
 
 static mut FLASH: MaybeUninit<flash::Parts> = MaybeUninit::uninit();
 static mut USB_BUS: MaybeUninit<UsbBusAllocator<UsbBusType>> = MaybeUninit::uninit();
@@ -231,34 +230,37 @@ fn dfu_init() {
 
     rcc.cfgr = rcc
         .cfgr
-        .use_hse(8.mhz())
-        .sysclk(72.mhz())
-        .hclk(72.mhz())
-        .pclk1(36.mhz())
-        .pclk2(72.mhz());
+        .use_hse(8.MHz())
+        .sysclk(72.MHz())
+        .hclk(72.MHz())
+        .pclk1(36.MHz())
+        .pclk2(72.MHz());
 
     let clocks = rcc.cfgr.freeze(&mut flash.acr);
 
-    let mut gpioc = device.GPIOC.split(&mut rcc.apb2);
-    let led = gpioc
+    let mut gpioc = device.GPIOC.split();
+    let mut led = gpioc
         .pc13
-        .into_push_pull_output_with_state(&mut gpioc.crh, gpio::State::High);
+        .into_push_pull_output_with_state(&mut gpioc.crh, gpio::PinState::High);
+
+    led.toggle();
 
     unsafe {
         LED.as_mut_ptr().write(led);
     }
 
-    let timer = Timer::tim2(device.TIM2, &clocks, &mut rcc.apb1);
-    let mut ct = timer.start_count_down(1.hz());
-    ct.listen(Event::Update);
+    let mut timer = device.TIM2.counter_hz(&clocks);
+    timer.start(1.Hz()).unwrap_or_else(|_|{panic!()});
+
+    timer.listen(Event::Update);
 
     unsafe {
-        TIM.as_mut_ptr().write(ct);
+        TIM.as_mut_ptr().write(timer);
     }
 
     debug_assert!(clocks.usbclk_valid());
 
-    let mut gpioa = device.GPIOA.split(&mut rcc.apb2);
+    let mut gpioa = device.GPIOA.split();
 
     // BluePill board has a pull-up resistor on the D+ line.
     // Pull the D+ pin down to send a RESET condition to the USB bus.
@@ -266,7 +268,7 @@ fn dfu_init() {
     // will not reset your device when you upload new firmware.
     let mut usb_dp = gpioa.pa12.into_push_pull_output(&mut gpioa.crh);
 
-    usb_dp.set_low().ok();
+    usb_dp.set_low();
     cortex_m::asm::delay(1024);
 
     /* USB Peripheral */
@@ -444,9 +446,9 @@ fn TIM2() {
     let led = unsafe { &mut *LED.as_mut_ptr() };
     let tim = unsafe { &mut *TIM.as_mut_ptr() };
 
-    tim.clear_update_interrupt_flag();
+    let _ = tim.wait();
 
-    led.toggle().ok();
+    led.toggle();
 }
 
 fn usb_interrupt() {
