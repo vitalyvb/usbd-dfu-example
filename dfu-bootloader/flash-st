@@ -1,6 +1,13 @@
 #!/bin/bash
 
-cargo b && \
-arm-none-eabi-objcopy -O binary target/thumbv7m-none-eabi/release/dfu-bootloader dfu-bootloader.bin && \
-st-flash write dfu-bootloader.bin 0x8000000
+ELF="target/thumbv7m-none-eabi/release/dfu-bootloader"
 
+set -e
+
+cargo b
+
+arm-none-eabi-nm -C -t d --print-size --size-sort "$ELF"
+arm-none-eabi-size -G "$ELF"
+arm-none-eabi-objcopy -O binary "$ELF" dfu-bootloader.bin
+
+st-flash --connect-under-reset write dfu-bootloader.bin 0x8000000

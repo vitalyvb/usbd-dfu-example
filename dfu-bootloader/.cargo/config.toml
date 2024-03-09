@@ -6,6 +6,7 @@ rustflags = [
 [alias]
 b = ["build", "--release", "--target", "thumbv7m-none-eabi"]
 bd = ["build", "--target", "thumbv7m-none-eabi"]
+bb = ["bloat", "--release", "--target", "thumbv7m-none-eabi"]
 
 [build]
 target = "thumbv7m-none-eabi"

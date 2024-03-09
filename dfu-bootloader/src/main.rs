@@ -243,8 +243,6 @@ fn dfu_init() {
         .pc13
         .into_push_pull_output_with_state(&mut gpioc.crh, gpio::PinState::High);
 
-    led.toggle();
-
     unsafe {
         LED.as_mut_ptr().write(led);
     }
@@ -301,18 +299,24 @@ fn dfu_init() {
     let usb_vid_pid_is_for_private_testing_only = ();
 
     let usb_dev = UsbDeviceBuilder::new(bus, UsbVidPid(0xf055, 0xdf11))
-        .manufacturer("Manufacturer")
-        .product("Product")
-        .serial_number(get_serial_str())
+        .strings(&[StringDescriptors::default()
+            .manufacturer("Manufacturer")
+            .product("Product")
+            .serial_number(get_serial_str())])
+        .unwrap_or_else(|_|{panic!()})
         .device_release(0x0200)
         .self_powered(false)
         .max_power(250)
+        .unwrap_or_else(|_|{panic!()})
         .max_packet_size_0(64)
+        .unwrap_or_else(|_|{panic!()})
         .build();
 
     unsafe {
         USB_DEVICE.as_mut_ptr().write(usb_dev);
     }
+
+    cortex_m::asm::dsb();
 
     unsafe {
         cortex_m::peripheral::NVIC::unmask(stm32f1xx_hal::pac::Interrupt::TIM2);
@@ -431,9 +435,10 @@ fn controller_reset() -> ! {
         // System reset request
         cortex.SCB.aircr.modify(|v| 0x05FA_0004 | (v & 0x700));
     }
-    cortex_m::asm::dsb();
 
-    loop {}
+    loop {
+        cortex_m::asm::nop()
+    }
 }
 
 #[interrupt]
