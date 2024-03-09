@@ -21,7 +21,7 @@ use cortex_m_rt::entry;
 use stm32f1xx_hal::{
     pac,
     prelude::*,
-    timer::{CountDownTimer, Event, Timer},
+    timer::{CounterHz, Event},
 };
 
 use stm32f1xx_hal::gpio;
@@ -33,14 +33,14 @@ use core::mem::MaybeUninit;
 type LedType = gpioc::PC13<Output<PushPull>>;
 
 static mut LED: MaybeUninit<LedType> = MaybeUninit::uninit();
-static mut TIM: MaybeUninit<CountDownTimer<TIM2>> = MaybeUninit::uninit();
+static mut TIM: MaybeUninit<CounterHz<TIM2>> = MaybeUninit::uninit();
 static mut LED_STATUS: u32 = 0;
 
 const KEY_STAY_IN_BOOT: u32 = 0xb0d42b89;
 
 /// Configure VTOR register to point to an actual interrupt
 /// vector table, otherwise bootloader will handle interrupts
-/// and TIM2 interrupt will work as expected.
+/// and TIM2 interrupt will not work as expected.
 #[inline(never)]
 fn configure_vtor_dfu(scb: &cortex_m::peripheral::SCB) {
     extern "C" {
@@ -65,11 +65,11 @@ fn app_init() {
 
     rcc.cfgr = rcc
         .cfgr
-        .use_hse(8.mhz())
-        .sysclk(72.mhz())
-        .hclk(72.mhz())
-        .pclk1(36.mhz())
-        .pclk2(72.mhz());
+        .use_hse(8.MHz())
+        .sysclk(72.MHz())
+        .hclk(72.MHz())
+        .pclk1(36.MHz())
+        .pclk2(72.MHz());
 
     configure_vtor_dfu(&cortex.SCB);
 
@@ -77,22 +77,22 @@ fn app_init() {
     // `clocks`
     let clocks = rcc.cfgr.freeze(&mut flash.acr);
 
-    let mut gpioc = device.GPIOC.split(&mut rcc.apb2);
+    let mut gpioc = device.GPIOC.split();
     let led = gpioc
         .pc13
-        .into_push_pull_output_with_state(&mut gpioc.crh, gpio::State::High);
+        .into_push_pull_output_with_state(&mut gpioc.crh, gpio::PinState::High);
 
     unsafe {
         LED.as_mut_ptr().write(led);
     }
 
-    let timer = Timer::tim2(device.TIM2, &clocks, &mut rcc.apb1);
-    let mut ct = timer.start_count_down(10.hz());
+    let mut timer = device.TIM2.counter_hz(&clocks);
+    timer.start(10.Hz()).unwrap_or_else(|_|{panic!()});
 
-    ct.listen(Event::Update);
+    timer.listen(Event::Update);
 
     unsafe {
-        TIM.as_mut_ptr().write(ct);
+        TIM.as_mut_ptr().write(timer);
     }
 
     unsafe {
@@ -131,7 +131,9 @@ fn reset_into_dfu() -> ! {
         cortex.SCB.aircr.modify(|v| 0x05FA_0004 | (v & 0x700));
     }
     cortex_m::asm::dsb();
-    loop {}
+    loop {
+        cortex_m::asm::nop();
+    }
 }
 
 /// Blink LED, and reset to DFU after some time.
@@ -141,9 +143,9 @@ fn TIM2() {
     let tim = unsafe { &mut *TIM.as_mut_ptr() };
     let status = unsafe { &mut LED_STATUS };
 
-    tim.clear_update_interrupt_flag();
+    let _ = tim.wait();
 
-    led.toggle().ok();
+    led.toggle();
     *status += 1;
 
     if *status == 100 {

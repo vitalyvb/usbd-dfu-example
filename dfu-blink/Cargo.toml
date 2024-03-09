@@ -1,7 +1,7 @@
 [package]
 name = "dfu-blink"
 description = "Blink application for DFU bootloader example"
-version = "0.3.0"
+version = "0.4.0"
 authors = ["Vitalii Bursov <vitaly@bursov.com>"]
 edition = "2021"
 license = "MIT"
@@ -14,12 +14,11 @@ codegen-units = 1
 debug = true
 
 [dependencies]
-cortex-m = "0.6.7"
-cortex-m-rt = "0.6.13"
-embedded-hal = "0.2.4"
+cortex-m = "0.7.6"
+cortex-m-rt = "0.7.1"
+embedded-hal = "0.2.7"
 panic-halt = "0.2.0"
 
 [dependencies.stm32f1xx-hal]
-version = "0.7.0"
+version = "0.10.0"
 features = ["rt", "stm32f103", "medium"]
-
