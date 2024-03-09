@@ -28,35 +28,37 @@ use stm32f1xx_hal::gpio;
 use stm32f1xx_hal::gpio::{gpioc, Output, PushPull};
 use stm32f1xx_hal::pac::{interrupt, TIM2};
 
-use core::mem::MaybeUninit;
+use core::{mem::MaybeUninit, ptr::addr_of_mut};
 
 type LedType = gpioc::PC13<Output<PushPull>>;
 
 static mut LED: MaybeUninit<LedType> = MaybeUninit::uninit();
 static mut TIM: MaybeUninit<CounterHz<TIM2>> = MaybeUninit::uninit();
-static mut LED_STATUS: u32 = 0;
 
+/// If this value is found at the address 0x2000_0000 (beginning of RAM),
+/// bootloader will enter DFU mode. See memory.x linker script.
 const KEY_STAY_IN_BOOT: u32 = 0xb0d42b89;
 
 /// Configure VTOR register to point to an actual interrupt
-/// vector table, otherwise bootloader will handle interrupts
-/// and TIM2 interrupt will not work as expected.
+/// vector table if the bootloader didn't do this for us.
+/// Otherwise bootloader will handle interrupts and TIM2
+/// interrupt will not work as expected.
 #[inline(never)]
 fn configure_vtor_dfu(scb: &cortex_m::peripheral::SCB) {
     extern "C" {
-        static __reset_vector: u32;
+        static __vector_table: u32;
     }
 
     unsafe {
-        let addr: u32 = core::mem::transmute(&__reset_vector);
+        let addr: u32 = core::mem::transmute(&__vector_table);
         scb.vtor.write(addr & 0x3ffffe00);
     }
 }
 
 /// Initialize hardware, LED GPIO and a timer
 fn app_init() {
-    let cortex = cortex_m::Peripherals::take().unwrap();
-    let device = pac::Peripherals::take().unwrap();
+    let cortex = cortex_m::Peripherals::take().unwrap_or_else(||{panic!()});
+    let device = pac::Peripherals::take().unwrap_or_else(||{panic!()});
 
     // Take ownership over the raw flash and rcc devices and convert them into the corresponding
     // HAL structs
@@ -77,22 +79,26 @@ fn app_init() {
     // `clocks`
     let clocks = rcc.cfgr.freeze(&mut flash.acr);
 
-    let mut gpioc = device.GPIOC.split();
-    let led = gpioc
-        .pc13
-        .into_push_pull_output_with_state(&mut gpioc.crh, gpio::PinState::High);
+    {
+        let mut gpioc = device.GPIOC.split();
+        let led = gpioc
+            .pc13
+            .into_push_pull_output_with_state(&mut gpioc.crh, gpio::PinState::High);
 
-    unsafe {
-        LED.as_mut_ptr().write(led);
+        unsafe {
+            LED.write(led);
+        }
     }
 
-    let mut timer = device.TIM2.counter_hz(&clocks);
-    timer.start(10.Hz()).unwrap_or_else(|_|{panic!()});
+    {
+        let mut timer = device.TIM2.counter_hz(&clocks);
+        timer.start(10.Hz()).unwrap_or_else(|_|{panic!()});
 
-    timer.listen(Event::Update);
+        timer.listen(Event::Update);
 
-    unsafe {
-        TIM.as_mut_ptr().write(timer);
+        unsafe {
+            TIM.write(timer);
+        }
     }
 
     unsafe {
@@ -115,40 +121,41 @@ fn main() -> ! {
     }
 }
 
+fn magic_mut_ptr() -> *mut u32 {
+    extern "C" {
+        #[link_name = "_dfu_magic"]
+        static mut magic : u32;
+    }
+
+    unsafe { addr_of_mut!(magic) }
+}
+
 /// Write a magic value to RAM to stay in DFU mode and
 /// reset.
 fn reset_into_dfu() -> ! {
     cortex_m::interrupt::disable();
 
-    let cortex = unsafe { cortex_m::Peripherals::steal() };
+    unsafe { magic_mut_ptr().write_volatile(KEY_STAY_IN_BOOT) };
 
-    let p = 0x2000_0000 as *mut u32;
-    unsafe { p.write_volatile(KEY_STAY_IN_BOOT) };
-
-    cortex_m::asm::dsb();
-    unsafe {
-        // System reset request
-        cortex.SCB.aircr.modify(|v| 0x05FA_0004 | (v & 0x700));
-    }
-    cortex_m::asm::dsb();
-    loop {
-        cortex_m::asm::nop();
-    }
+    cortex_m::peripheral::SCB::sys_reset();
 }
 
 /// Blink LED, and reset to DFU after some time.
 #[interrupt]
 fn TIM2() {
-    let led = unsafe { &mut *LED.as_mut_ptr() };
-    let tim = unsafe { &mut *TIM.as_mut_ptr() };
-    let status = unsafe { &mut LED_STATUS };
+    static mut STATUS: u32 = 0;
+
+    // Safety: After initialization these static variables used only here.
+    // Also see app_init()
+    let led = unsafe { LED.assume_init_mut() };
+    let tim = unsafe { TIM.assume_init_mut() };
 
     let _ = tim.wait();
 
     led.toggle();
-    *status += 1;
+    *STATUS += 1;
 
-    if *status == 100 {
+    if *STATUS == 100 {
         reset_into_dfu();
     }
 }

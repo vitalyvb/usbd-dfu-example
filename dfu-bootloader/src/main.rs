@@ -31,7 +31,7 @@
 #![no_std]
 #![no_main]
 
-use core::str;
+use core::{ptr::addr_of_mut, str};
 
 use panic_halt as _;
 
@@ -52,7 +52,7 @@ use usbd_dfu::*;
 use core::mem::MaybeUninit;
 
 /// If this value is found at the address 0x2000_0000 (beginning of RAM),
-/// bootloader will enter DFU mode.
+/// bootloader will enter DFU mode. See memory.x linker script.
 const KEY_STAY_IN_BOOT: u32 = 0xb0d42b89;
 
 /// Board flash configuration. MEM_INFO_STRING below must also be changed.
@@ -66,8 +66,6 @@ type LedType = gpioc::PC13<Output<PushPull>>;
 static mut LED: MaybeUninit<LedType> = MaybeUninit::uninit();
 static mut TIM: MaybeUninit<CounterHz<TIM2>> = MaybeUninit::uninit();
 
-static mut FLASH: MaybeUninit<flash::Parts> = MaybeUninit::uninit();
-static mut USB_BUS: MaybeUninit<UsbBusAllocator<UsbBusType>> = MaybeUninit::uninit();
 static mut USB_DEVICE: MaybeUninit<UsbDevice<UsbBusType>> = MaybeUninit::uninit();
 static mut USB_DFU: MaybeUninit<DFUClass<UsbBusType, STM32Mem>> = MaybeUninit::uninit();
 
@@ -77,13 +75,7 @@ pub struct STM32Mem<'a> {
 }
 
 impl<'a> STM32Mem<'a> {
-    fn new(mut writer: flash::FlashWriter<'a>) -> Self {
-        // Disable erase and program verification.
-        // It should be enabled, but erase verification
-        // does not work.
-        // https://github.com/stm32-rs/stm32f1xx-hal/pull/328
-        writer.change_verification(false);
-
+    fn new(writer: flash::FlashWriter<'a>) -> Self {
         Self {
             writer,
             buffer: [0; 128],
@@ -190,6 +182,7 @@ fn read_serial() -> u32 {
     let u_id0 = 0x1FFF_F7E8 as *const u32;
     let u_id1 = 0x1FFF_F7EC as *const u32;
 
+    // Safety: u_id0 and u_id1 are readable stm32f103 registers.
     unsafe { u_id0.read().wrapping_add(u_id1.read()) }
 }
 
@@ -212,18 +205,23 @@ fn get_serial_str() -> &'static str {
         *d = hex(((sn >> (i * 4)) & 0xf) as u8)
     }
 
+    // Safety: serial is a valid utf8
     unsafe { str::from_utf8_unchecked(serial) }
 }
 
 /// Initialize, configure all peripherals, and setup USB DFU.
 /// Interrupts must be disabled.
+/// Must be called maximum once.
 fn dfu_init() {
-    // let cortex = cortex_m::Peripherals::take().unwrap();
-    let device = unsafe { pac::Peripherals::steal() };
+    let device = pac::Peripherals::take().unwrap_or_else(||{panic!()});
 
+    // Safety: flash must outlive static USB_DFU, so it must be static itself.
+    // It also must be initialized at runtime because flash "value" is not const.
+    // Interrupts are disabled during initializaion.
     let flash = unsafe {
-        FLASH.as_mut_ptr().write(device.FLASH.constrain());
-        &mut *FLASH.as_mut_ptr()
+        static mut FLASH: MaybeUninit<flash::Parts> = MaybeUninit::uninit();
+        FLASH.write(device.FLASH.constrain());
+        FLASH.assume_init_mut()
     };
 
     let mut rcc = device.RCC.constrain();
@@ -237,26 +235,33 @@ fn dfu_init() {
         .pclk2(72.MHz());
 
     let clocks = rcc.cfgr.freeze(&mut flash.acr);
-
-    let mut gpioc = device.GPIOC.split();
-    let mut led = gpioc
-        .pc13
-        .into_push_pull_output_with_state(&mut gpioc.crh, gpio::PinState::High);
-
-    unsafe {
-        LED.as_mut_ptr().write(led);
-    }
-
-    let mut timer = device.TIM2.counter_hz(&clocks);
-    timer.start(1.Hz()).unwrap_or_else(|_|{panic!()});
-
-    timer.listen(Event::Update);
-
-    unsafe {
-        TIM.as_mut_ptr().write(timer);
-    }
-
     debug_assert!(clocks.usbclk_valid());
+
+    {
+        let mut gpioc = device.GPIOC.split();
+        let led = gpioc
+            .pc13
+            .into_push_pull_output_with_state(&mut gpioc.crh, gpio::PinState::High);
+
+        // Safety: After the write() LED is used only inside the timer interrupt.
+        // Interrupts are disabled during initializaion.
+        unsafe {
+            LED.write(led);
+        }
+    }
+
+    {
+        let mut timer = device.TIM2.counter_hz(&clocks);
+        timer.start(1.Hz()).unwrap_or_else(|_|{panic!()});
+
+        timer.listen(Event::Update);
+
+        // Safety: After the write() TIM is used only inside the timer interrupt.
+        // Interrupts are disabled during initializaion.
+        unsafe {
+            TIM.write(timer);
+        }
+    }
 
     let mut gpioa = device.GPIOA.split();
 
@@ -280,9 +285,13 @@ fn dfu_init() {
         pin_dp: usb_dp,
     };
 
+    // Safety: bus must outlive static USB_DFU, so it must be static itself.
+    // It also must be initialized at runtime because its "value" is not const.
+    // Interrupts are disabled during initializaion.
     let bus = unsafe {
-        USB_BUS.as_mut_ptr().write(UsbBus::new(usb_periph));
-        &*USB_BUS.as_ptr()
+        static mut USB_BUS: MaybeUninit<UsbBusAllocator<UsbBusType>> = MaybeUninit::uninit();
+        USB_BUS.write(UsbBus::new(usb_periph));
+        USB_BUS.assume_init_ref()
     };
 
     /* DFU */
@@ -290,8 +299,10 @@ fn dfu_init() {
     let fwr = flash.writer(flash::SectorSize::Sz1K, FLASH_SIZE);
     let stm32mem = STM32Mem::new(fwr);
 
+    // Safety: After the write() USB_DFU is used only inside the usb interrupt.
+    // Interrupts are disabled during initializaion.
     unsafe {
-        USB_DFU.as_mut_ptr().write(DFUClass::new(bus, stm32mem));
+        USB_DFU.write(DFUClass::new(bus, stm32mem));
     }
 
     /* USB device */
@@ -312,8 +323,10 @@ fn dfu_init() {
         .unwrap_or_else(|_|{panic!()})
         .build();
 
+    // Safety: After the write() USB_DEVICE is used only inside the usb interrupt.
+    // Interrupts are disabled during initializaion.
     unsafe {
-        USB_DEVICE.as_mut_ptr().write(usb_dev);
+        USB_DEVICE.write(usb_dev);
     }
 
     cortex_m::asm::dsb();
@@ -365,7 +378,12 @@ fn quick_uninit() {
 #[inline(never)]
 fn jump_to_app() -> ! {
     let vt = FW_ADDRESS as *const u32;
+
+    cortex_m::interrupt::disable();
+
     unsafe {
+        let periph = cortex_m::peripheral::Peripherals::steal();
+        periph.SCB.vtor.write(vt as u32);
         cortex_m::asm::bootload(vt);
     }
 }
@@ -379,18 +397,25 @@ fn try_start_app() {
     }
 }
 
+fn magic_mut_ptr() -> *mut u32 {
+    extern "C" {
+        #[link_name = "_dfu_magic"]
+        static mut magic : u32;
+    }
+
+    unsafe { addr_of_mut!(magic) }
+}
+
 /// Read magic value to determine if
 /// device must enter DFU mode.
 fn get_uninit_val() -> u32 {
-    let p = 0x2000_0000 as *mut u32;
-    unsafe { p.read_volatile() }
+    unsafe { magic_mut_ptr().read_volatile() }
 }
 
 /// Erase magic value in RAM so that
 /// DFU would be triggered only once.
 fn clear_uninit_val() {
-    let p = 0x2000_0000 as *mut u32;
-    unsafe { p.write_volatile(0) };
+    unsafe { magic_mut_ptr().write_volatile(0) };
 }
 
 /// Return true if "uninit" area of RAM has a
@@ -426,19 +451,7 @@ fn main() -> ! {
 }
 
 fn controller_reset() -> ! {
-    cortex_m::interrupt::disable();
-
-    let cortex = unsafe { cortex_m::Peripherals::steal() };
-
-    cortex_m::asm::dsb();
-    unsafe {
-        // System reset request
-        cortex.SCB.aircr.modify(|v| 0x05FA_0004 | (v & 0x700));
-    }
-
-    loop {
-        cortex_m::asm::nop()
-    }
+    cortex_m::peripheral::SCB::sys_reset();
 }
 
 #[interrupt]
@@ -448,8 +461,10 @@ fn USB_LP_CAN_RX0() {
 
 #[interrupt]
 fn TIM2() {
-    let led = unsafe { &mut *LED.as_mut_ptr() };
-    let tim = unsafe { &mut *TIM.as_mut_ptr() };
+    // Safety: After initialization these static variables used only here.
+    // Also see dfu_init()
+    let led = unsafe { LED.assume_init_mut() };
+    let tim = unsafe { TIM.assume_init_mut() };
 
     let _ = tim.wait();
 
@@ -457,8 +472,10 @@ fn TIM2() {
 }
 
 fn usb_interrupt() {
-    let usb_dev = unsafe { &mut *USB_DEVICE.as_mut_ptr() };
-    let dfu = unsafe { &mut *USB_DFU.as_mut_ptr() };
+    // Safety: After initialization these static variables used only here.
+    // Also see dfu_init()
+    let usb_dev = unsafe { USB_DEVICE.assume_init_mut() };
+    let dfu = unsafe { USB_DFU.assume_init_mut() };
 
     usb_dev.poll(&mut [dfu]);
 }
